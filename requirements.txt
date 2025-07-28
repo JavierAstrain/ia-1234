@@ -1,6 +1,5 @@
 streamlit
 PyPDF2
-python-dotenv
 langchain-community
 tiktoken
 faiss-cpu
