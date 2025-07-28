@@ -46,8 +46,8 @@ def get_document_text(docs):
 def get_text_chunks(text):
     """Divide el texto largo en fragmentos más pequeños y manejables."""
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=1000,          # Tamaño de cada fragmento
+        chunk_overlap=200,        # Superposición entre fragmentos para mantener contexto
         length_function=len
     )
     chunks = text_splitter.split_text(text)
@@ -70,7 +70,8 @@ def get_vectorstore(text_chunks, api_key):
 
 # --- 2. Función para la Cadena Conversacional (Chatbot) ---
 
-@st.cache_resource # Almacena en caché la cadena de conversación
+# Se eliminó @st.cache_resource aquí porque el objeto vectorstore no es hashable fácilmente.
+# La creación de la cadena y la memoria es rápida y no justifica el caché aquí.
 def get_conversation_chain(vectorstore, api_key):
     """Configura la cadena de conversación para el chatbot."""
     # Usamos ChatGoogleGenerativeAI para el LLM principal
@@ -120,6 +121,7 @@ def main():
         st.session_state.conversation = None
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    # Usamos una clave para el uploader para que se resetee si cambiamos de archivos
     if "last_processed_data_hash" not in st.session_state: # Para rastrear si los datos de entrada han cambiado
         st.session_state.last_processed_data_hash = None
 
@@ -143,45 +145,51 @@ def main():
         )
 
         # Crear un hash de los contenidos para detectar cambios en los datos de entrada
-        current_data_hash = hash((
-            tuple(f.read() for f in uploaded_files) if uploaded_files else (),
-            text_input
-        ))
-        # Resetear el puntero de los archivos subidos para que no se lean dos veces
+        # Necesitamos leer los archivos aquí para el hash, y luego re-apuntar para la función
+        raw_uploaded_contents = []
         if uploaded_files:
             for f in uploaded_files:
-                f.seek(0) # Pone el puntero al inicio del archivo
+                raw_uploaded_contents.append(f.read())
+                f.seek(0) # Resetear el puntero del archivo para que pueda ser leído de nuevo en get_document_text
 
+        current_data_hash = hash((
+            tuple(raw_uploaded_contents),
+            text_input
+        ))
+        
         # Botón para procesar los datos
         # El procesamiento se activa si se pulsa el botón O si los datos han cambiado y no se han procesado aún
-        if st.button("Procesar Datos", key="process_button") or \
-           (current_data_hash != st.session_state.last_processed_data_hash and (uploaded_files or text_input)):
-            
-            # Solo procesar si hay datos nuevos O si se forzó con el botón
-            if current_data_hash != st.session_state.last_processed_data_hash or st.button("Forzar Procesamiento", key="force_process_button_hidden", help="Esto solo se muestra si el contenido no ha cambiado pero quieres procesarlo de nuevo"):
-                
-                raw_text = ""
-                if uploaded_files:
-                    raw_text += get_document_text(uploaded_files)
-                if text_input:
-                    raw_text += text_input
+        if st.button("Procesar Datos", key="process_button"): # Siempre procesar si se pulsa el botón
+            should_process = True
+        elif (uploaded_files or text_input) and current_data_hash != st.session_state.last_processed_data_hash:
+            # Procesar automáticamente si hay datos y han cambiado
+            should_process = True
+        else:
+            should_process = False
 
-                if raw_text:
-                    st.session_state.messages = [] # Limpia el chat al procesar nuevos datos
-                    st.session_state.conversation = None # Resetea la cadena de conversación (necesario si cambia la base de conocimiento)
-                    
-                    text_chunks = get_text_chunks(raw_text)
-                    if text_chunks:
-                        vectorstore = get_vectorstore(text_chunks, GOOGLE_API_KEY)
-                        st.session_state.conversation = get_conversation_chain(vectorstore, GOOGLE_API_KEY)
-                        st.session_state.last_processed_data_hash = current_data_hash # Actualiza el hash de lo último procesado
-                        st.success("¡Datos procesados! Ahora puedes empezar a preguntar.")
-                    else:
-                        st.warning("No se pudo extraer texto procesable de los documentos/texto proporcionados. Asegúrate de que los archivos contengan texto o que el formato sea correcto.")
+        if should_process:
+            raw_text = ""
+            if uploaded_files:
+                raw_text += get_document_text(uploaded_files)
+            if text_input:
+                raw_text += text_input
+
+            if raw_text:
+                st.session_state.messages = [] # Limpia el chat al procesar nuevos datos
+                st.session_state.conversation = None # Resetea la cadena de conversación (necesario si cambia la base de conocimiento)
+                
+                text_chunks = get_text_chunks(raw_text)
+                if text_chunks: # Asegurarse de que haya chunks antes de crear el vectorstore
+                    vectorstore = get_vectorstore(text_chunks, GOOGLE_API_KEY)
+                    st.session_state.conversation = get_conversation_chain(vectorstore, GOOGLE_API_KEY)
+                    st.session_state.last_processed_data_hash = current_data_hash # Actualiza el hash de lo último procesado
+                    st.success("¡Datos procesados! Ahora puedes empezar a preguntar.")
                 else:
-                    st.warning("Por favor, sube al menos un archivo o pega texto antes de procesar.")
+                    st.warning("No se pudo extraer texto procesable de los documentos/texto proporcionados. Asegúrate de que los archivos contengan texto o que el formato sea correcto.")
             else:
-                st.info("Los datos actuales ya han sido procesados. Haz cambios o haz clic en 'Procesar Datos' de nuevo.")
+                st.warning("Por favor, sube al menos un archivo o pega texto antes de procesar.")
+        elif st.session_state.last_processed_data_hash is not None and current_data_hash == st.session_state.last_processed_data_hash:
+             st.info("Los datos actuales ya han sido procesados. Modifica los datos de entrada o haz clic en 'Procesar Datos' para forzar el reprocesamiento.")
         
         st.markdown("---")
         st.info("Para procesar nuevos documentos/texto, simplemente actualiza los datos de entrada (sube nuevos archivos o modifica el texto) y haz clic en 'Procesar Datos'. El chat se reseteará.")
